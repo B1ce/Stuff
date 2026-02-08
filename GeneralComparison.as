@@ -28,7 +28,7 @@ int recordingInterval = 1;
 int lastClosestIndex = 0;
 int lastRecordedTime = -1;
 int tickCounter = 0; 
-int lastDisplayIndex = -1; // NEW: Tracks when to update the UI
+int lastDisplayIndex = -1;
 
 // UI Variables
 float ui_Delta = 0.0f;     
@@ -46,7 +46,7 @@ PluginInfo@ GetPluginInfo()
     PluginInfo info;
     info.Name = "General Comparison";
     info.Author = "Bice with Gemini3";
-    info.Version = "1.0";
+    info.Version = "1.2";
     info.Description = "Compares the time and speed difference based on position";
     return info;
 }
@@ -60,7 +60,28 @@ void ClearReferenceMemory()
 {
     @referenceRun = null;
     @referenceRun = array<GhostSample>();
-    lastDisplayIndex = -1; // Reset display tracker
+    lastDisplayIndex = -1;
+}
+
+void TruncateRecording(int timeLimit)
+{
+    if (referenceRun is null || referenceRun.Length == 0) return;
+
+    uint newLength = referenceRun.Length;
+    for (int i = int(referenceRun.Length) - 1; i >= 0; i--)
+    {
+        if (referenceRun[i].Time <= timeLimit)
+        {
+            newLength = i + 1;
+            break;
+        }
+        if (i == 0) newLength = 0;
+    }
+
+    if (newLength < referenceRun.Length)
+    {
+        referenceRun.Resize(newLength);
+    }
 }
 
 // --- LOGIC LOOP ---
@@ -72,7 +93,6 @@ void OnRunStep(SimulationManager@ sim)
 
     int currentRaceTime = sim.PlayerInfo.RaceTime;
 
-    // Auto-Stop Recording
     if (isRecording && sim.PlayerInfo.RaceFinished)
     {
         isRecording = false;
@@ -81,13 +101,12 @@ void OnRunStep(SimulationManager@ sim)
         return; 
     }
 
-    // Reset detection
     if (isRecording)
     {
         if (lastRecordedTime != -1 && currentRaceTime < lastRecordedTime)
         {
-            ClearReferenceMemory();
-            lastRecordedTime = -1; 
+            TruncateRecording(currentRaceTime);
+            lastRecordedTime = currentRaceTime;
             tickCounter = 0; 
         }
     }
@@ -96,7 +115,7 @@ void OnRunStep(SimulationManager@ sim)
         if (currentRaceTime < 100) 
         {
             lastClosestIndex = 0;
-            lastDisplayIndex = -1; // Reset on restart
+            lastDisplayIndex = -1; 
         }
     }
 
@@ -120,10 +139,21 @@ void OnRunStep(SimulationManager@ sim)
         }
         else if (hasReference && referenceRun.Length > 0)
         {
-            int searchRadius = 150; 
-            int len = int(referenceRun.Length);
-            int startIndex = Math::Max(0, lastClosestIndex - searchRadius);
-            int endIndex = Math::Min(len - 1, lastClosestIndex + searchRadius);
+            float distToLastKnown = Math::Distance(currentPos, referenceRun[lastClosestIndex].Position);
+            
+            int startIndex, endIndex;
+            
+            if (distToLastKnown > 50.0f)
+            {
+                startIndex = 0;
+                endIndex = int(referenceRun.Length) - 1;
+            }
+            else
+            {
+                int searchRadius = 150; 
+                startIndex = Math::Max(0, lastClosestIndex - searchRadius);
+                endIndex = Math::Min(int(referenceRun.Length) - 1, lastClosestIndex + searchRadius);
+            }
             
             float closestDist = 999999.0f;
             int bestIndex = lastClosestIndex;
@@ -140,12 +170,9 @@ void OnRunStep(SimulationManager@ sim)
             
             lastClosestIndex = bestIndex;
             
-            // --- NEW: STABILITY CHECK ---
-            // Only recalculate the output if we have actually matched a NEW sample.
-            // If we are still closest to the same sample as last tick, we hold the old values.
             if (bestIndex != lastDisplayIndex)
             {
-                lastDisplayIndex = bestIndex; // Update the tracker
+                lastDisplayIndex = bestIndex;
 
                 vec3 velocity = sim.Dyna.CurrentState.LinearSpeed;
                 float preciseSpeed = GetExactSpeed(velocity);
@@ -165,24 +192,27 @@ void Render()
 {
     if (referenceRun is null) @referenceRun = array<GhostSample>();
 
-    // --- 1. Control Panel ---
     if (!ui_ControlsInitialized)
     {
         UI::SetNextWindowPos(vec2(100, 100));
-	UI::SetNextWindowSize(vec2(550, 160));
+        UI::SetNextWindowSize(vec2(550, 160));
         ui_ControlsInitialized = true;
     }
 
     int controlFlags = 0; 
     
-    if (UI::Begin("Comparison Controls", controlFlags))
+    // Updated Window Name to match new Plugin Name
+    if (UI::Begin("General Comparison", controlFlags))
     {
         if (!hasReference)
         {
+            // REPLACED TEXT 1
             UI::Text("Drive the comparison run and record it");
             
-            recordingInterval = UI::SliderInt("##RecInterval", recordingInterval, 1, 10);
+            // REPLACED TEXT 2
             UI::Text("Recording interval: Smaller number = more accurate, but more memory usage");
+            
+            recordingInterval = UI::SliderInt("##RecInterval", recordingInterval, 1, 10);
             
             if (!isRecording)
             {
@@ -220,7 +250,6 @@ void Render()
     }
     UI::End();
 
-    // --- 2. Data Overlay ---
     auto sim = GetSimulationManager();
     if (sim !is null && sim.PlayerInfo !is null && sim.PlayerInfo.RaceTime > 0 && hasReference && !isRecording)
     {
@@ -241,9 +270,8 @@ void Render()
             overlayFlags |= UI::WindowFlags::NoTitleBar; 
         }
 
-        if (UI::Begin("Speed Delta", overlayFlags))
+        if (UI::Begin("Difference Display", overlayFlags))
         {
-            // Speed Diff
             string signSpeed = (ui_Delta > 0) ? "+" : "";
             vec4 colorSpeed;
             if (ui_Delta > 0) colorSpeed = vec4(0, 1, 0, 1);       
@@ -254,8 +282,7 @@ void Render()
             UI::Text("SpeedDif: " + signSpeed + Text::FormatFloat(ui_Delta, "", 0, 3));
             UI::PopStyleColor();
 
-            // Time Diff
-            string displaySign = (ui_TimeDif > 0) ? "-" : ""; 
+            string displaySign = (ui_TimeDif > 0) ? "+" : ""; 
             vec4 colorTime;
             if (ui_TimeDif > 0) colorTime = vec4(0, 1, 0, 1);      
             else if (ui_TimeDif < 0) colorTime = vec4(1, 0, 0, 1); 
