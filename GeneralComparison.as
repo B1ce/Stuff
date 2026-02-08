@@ -282,7 +282,7 @@ void Render()
             UI::Text("SpeedDif: " + signSpeed + Text::FormatFloat(ui_Delta, "", 0, 3));
             UI::PopStyleColor();
 
-            string displaySign = (ui_TimeDif > 0) ? "+" : ""; 
+            string displaySign = (ui_TimeDif > 0) ? "-" : ""; 
             vec4 colorTime;
             if (ui_TimeDif > 0) colorTime = vec4(0, 1, 0, 1);      
             else if (ui_TimeDif < 0) colorTime = vec4(1, 0, 0, 1); 
@@ -300,3 +300,4 @@ void Render()
         UI::End();
     }
 }
+
