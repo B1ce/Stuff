@@ -1,5 +1,3 @@
-// GeneralComparison.as
-
 class GhostSample
 {
     vec3 Position;
@@ -7,6 +5,7 @@ class GhostSample
     int Time;
     
     GhostSample() { } 
+    
     GhostSample(vec3 pos, float speed, int time)
     {
         this.Position = pos;
@@ -15,57 +14,57 @@ class GhostSample
     }
 }
 
-// Global Storage
 array<GhostSample>@ referenceRun = array<GhostSample>();
 
 bool isRecording = false;
 bool hasReference = false;
 
-// Settings
+bool useRecordingInterval = false; 
 int recordingInterval = 1; 
+bool showRefStats = false; 
 
-// State Variables
 int lastClosestIndex = 0;
 int lastRecordedTime = -1;
 int tickCounter = 0; 
 int lastDisplayIndex = -1;
 
-// UI Variables
 float ui_Delta = 0.0f;     
 float ui_TimeDif = 0.0f;   
 float ui_RefSpeed = 0.0f;
 int ui_RefTime = 0;     
 
-// Window State Flags
-bool ui_OverlayInitialized = false; 
 bool ui_ControlsInitialized = false;
-bool ui_LockOverlay = false;        
 
 PluginInfo@ GetPluginInfo()
 {
     PluginInfo info;
     info.Name = "General Comparison";
     info.Author = "Bice with Gemini3";
-    info.Version = "1.2";
+    info.Version = "2.2";
     info.Description = "Compares the time and speed difference based on position";
     return info;
 }
 
+float DistSq(vec3 a, vec3 b)
+{
+    return (a.x - b.x)*(a.x - b.x) + (a.y - b.y)*(a.y - b.y) + (a.z - b.z)*(a.z - b.z);
+}
+
 float GetExactSpeed(vec3 velocity)
 {
-    return Math::Distance(vec3(0,0,0), velocity) * 3.6f;
+    return Math::Sqrt(velocity.x*velocity.x + velocity.y*velocity.y + velocity.z*velocity.z) * 3.6f;
 }
 
 void ClearReferenceMemory()
 {
-    @referenceRun = null;
-    @referenceRun = array<GhostSample>();
+    referenceRun.Resize(0);
     lastDisplayIndex = -1;
+    lastClosestIndex = 0; 
 }
 
 void TruncateRecording(int timeLimit)
 {
-    if (referenceRun is null || referenceRun.Length == 0) return;
+    if (referenceRun.Length == 0) return;
 
     uint newLength = referenceRun.Length;
     for (int i = int(referenceRun.Length) - 1; i >= 0; i--)
@@ -84,12 +83,9 @@ void TruncateRecording(int timeLimit)
     }
 }
 
-// --- LOGIC LOOP ---
 void OnRunStep(SimulationManager@ sim)
 {
-    if (sim is null || sim.PlayerInfo is null || sim.Dyna is null) return;
-    
-    if (referenceRun is null) @referenceRun = array<GhostSample>();
+    if (sim is null || sim.PlayerInfo is null || sim.Dyna is null || sim.Dyna.CurrentState is null) return;
 
     int currentRaceTime = sim.PlayerInfo.RaceTime;
 
@@ -128,57 +124,67 @@ void OnRunStep(SimulationManager@ sim)
             if (currentRaceTime != lastRecordedTime)
             {
                 tickCounter++;
-                if (tickCounter % recordingInterval == 0)
+                int activeInterval = useRecordingInterval ? recordingInterval : 1;
+                
+                if (tickCounter % activeInterval == 0)
                 {
                     vec3 velocity = sim.Dyna.CurrentState.LinearSpeed;
-                    float preciseSpeed = GetExactSpeed(velocity);
-                    referenceRun.Add(GhostSample(currentPos, preciseSpeed, currentRaceTime));
+                    referenceRun.Add(GhostSample(currentPos, GetExactSpeed(velocity), currentRaceTime));
                 }
                 lastRecordedTime = currentRaceTime;
             }
         }
         else if (hasReference && referenceRun.Length > 0)
         {
-            float distToLastKnown = Math::Distance(currentPos, referenceRun[lastClosestIndex].Position);
+            int left = 0;
+            int right = int(referenceRun.Length) - 1;
+            int timeGuessIndex = lastClosestIndex;
             
-            int startIndex, endIndex;
-            
-            if (distToLastKnown > 50.0f)
+            while (left <= right)
             {
-                startIndex = 0;
-                endIndex = int(referenceRun.Length) - 1;
-            }
-            else
-            {
-                int searchRadius = 150; 
-                startIndex = Math::Max(0, lastClosestIndex - searchRadius);
-                endIndex = Math::Min(int(referenceRun.Length) - 1, lastClosestIndex + searchRadius);
+                int mid = left + (right - left) / 2;
+                
+                if (referenceRun[mid].Time == currentRaceTime)
+                {
+                    timeGuessIndex = mid;
+                    break;
+                }
+                else if (referenceRun[mid].Time < currentRaceTime)
+                {
+                    timeGuessIndex = mid;
+                    left = mid + 1;
+                }
+                else
+                {
+                    right = mid - 1;
+                }
             }
             
-            float closestDist = 999999.0f;
-            int bestIndex = lastClosestIndex;
+            int searchRadius = 150; 
+            int startIndex = Math::Max(0, timeGuessIndex - searchRadius);
+            int endIndex = Math::Min(int(referenceRun.Length) - 1, timeGuessIndex + searchRadius);
+            
+            float closestDistSq = 999999999.0f;
+            int bestIndex = timeGuessIndex;
 
             for (int i = startIndex; i <= endIndex; i++)
             {
-                float dist = Math::Distance(currentPos, referenceRun[i].Position);
-                if (dist < closestDist)
+                float dSq = DistSq(currentPos, referenceRun[i].Position);
+                if (dSq < closestDistSq)
                 {
-                    closestDist = dist;
+                    closestDistSq = dSq;
                     bestIndex = i;
                 }
             }
             
             lastClosestIndex = bestIndex;
             
-            if (bestIndex != lastDisplayIndex)
+            if (bestIndex >= 0 && bestIndex < int(referenceRun.Length) && bestIndex != lastDisplayIndex)
             {
                 lastDisplayIndex = bestIndex;
 
-                vec3 velocity = sim.Dyna.CurrentState.LinearSpeed;
-                float preciseSpeed = GetExactSpeed(velocity);
-                
                 ui_RefSpeed = referenceRun[bestIndex].Speed;
-                ui_Delta = preciseSpeed - ui_RefSpeed;
+                ui_Delta = GetExactSpeed(sim.Dyna.CurrentState.LinearSpeed) - ui_RefSpeed;
 
                 ui_RefTime = referenceRun[bestIndex].Time; 
                 ui_TimeDif = float(ui_RefTime - currentRaceTime) / 1000.0f;
@@ -187,32 +193,22 @@ void OnRunStep(SimulationManager@ sim)
     }
 }
 
-// --- RENDER LOOP ---
 void Render()
 {
-    if (referenceRun is null) @referenceRun = array<GhostSample>();
-
     if (!ui_ControlsInitialized)
     {
         UI::SetNextWindowPos(vec2(100, 100));
-        UI::SetNextWindowSize(vec2(550, 160));
         ui_ControlsInitialized = true;
     }
-
-    int controlFlags = 0; 
     
-    // Updated Window Name to match new Plugin Name
-    if (UI::Begin("General Comparison", controlFlags))
+    if (UI::Begin("General Comparison", UI::WindowFlags::AlwaysAutoResize))
     {
+        auto sim = GetSimulationManager();
+        bool isActivelyComparing = (sim !is null && sim.PlayerInfo !is null && sim.PlayerInfo.RaceTime > 0 && hasReference && !isRecording);
+        
         if (!hasReference)
         {
-            // REPLACED TEXT 1
-            UI::Text("Drive the comparison run and record it");
-            
-            // REPLACED TEXT 2
-            UI::Text("Recording interval: Smaller number = more accurate, but more memory usage");
-            
-            recordingInterval = UI::SliderInt("##RecInterval", recordingInterval, 1, 10);
+            UI::Text("Record the Comparison Run");
             
             if (!isRecording)
             {
@@ -233,71 +229,64 @@ void Render()
                     lastClosestIndex = 0;
                 }
                 UI::SameLine();
-                UI::TextDimmed("(Auto-stops when finishing)");
-                UI::Text("Samples: " + referenceRun.Length);
+                
+                int currentFrame = (tickCounter / 10) % 4;
+                string spinner = currentFrame == 0 ? "|" : currentFrame == 1 ? "/" : currentFrame == 2 ? "-" : "\\";
+                
+                UI::TextDimmed(spinner + " Recording");
+                UI::Text("Samples Recorded: " + referenceRun.Length);
             }
         }
         else
         {
-            UI::Text("Ref: " + referenceRun.Length + " samples");
-            
-            if (UI::Button("Clear Reference"))
+            if (UI::Button("Reset"))
             {
                 hasReference = false;
                 ClearReferenceMemory();
             }
         }
-    }
-    UI::End();
 
-    auto sim = GetSimulationManager();
-    if (sim !is null && sim.PlayerInfo !is null && sim.PlayerInfo.RaceTime > 0 && hasReference && !isRecording)
-    {
-        if (!ui_OverlayInitialized)
+        if (hasReference && isActivelyComparing)
         {
-            UI::SetNextWindowPos(vec2(600, 300));
-            UI::SetNextWindowSize(vec2(200, 100));
-            ui_OverlayInitialized = true;
-        }
-
-        int overlayFlags = 0;
-        if (ui_LockOverlay)
-        {
-            overlayFlags |= UI::WindowFlags::NoTitleBar | UI::WindowFlags::NoBackground | UI::WindowFlags::NoMove | UI::WindowFlags::NoMouseInputs | UI::WindowFlags::NoResize;
-        }
-        else
-        {
-            overlayFlags |= UI::WindowFlags::NoTitleBar; 
-        }
-
-        if (UI::Begin("Difference Display", overlayFlags))
-        {
-            string signSpeed = (ui_Delta > 0) ? "+" : "";
-            vec4 colorSpeed;
-            if (ui_Delta > 0) colorSpeed = vec4(0, 1, 0, 1);       
-            else if (ui_Delta < 0) colorSpeed = vec4(1, 0, 0, 1);  
-            else colorSpeed = vec4(1, 1, 1, 1);                    
+            string signSpeed = "";
+            vec4 colorSpeed = vec4(1, 1, 1, 1);
+            if (ui_Delta > 0) { signSpeed = "+"; colorSpeed = vec4(0, 1, 0, 1); }
+            else if (ui_Delta < 0) { colorSpeed = vec4(1, 0, 0, 1); }
 
             UI::PushStyleColor(UI::Col::Text, colorSpeed);
             UI::Text("SpeedDif: " + signSpeed + Text::FormatFloat(ui_Delta, "", 0, 3));
             UI::PopStyleColor();
 
-            string displaySign = (ui_TimeDif > 0) ? "-" : ""; 
-            vec4 colorTime;
-            if (ui_TimeDif > 0) colorTime = vec4(0, 1, 0, 1);      
-            else if (ui_TimeDif < 0) colorTime = vec4(1, 0, 0, 1); 
-            else colorTime = vec4(1, 1, 1, 1);
+            string displaySign = "";
+            vec4 colorTime = vec4(1, 1, 1, 1);
+            if (ui_TimeDif > 0) { displaySign = "+"; colorTime = vec4(0, 1, 0, 1); }
+            else if (ui_TimeDif < 0) { colorTime = vec4(1, 0, 0, 1); }
 
             UI::PushStyleColor(UI::Col::Text, colorTime);
             UI::Text("TimeDif:  " + displaySign + Text::FormatFloat(ui_TimeDif, "", 0, 3));
             UI::PopStyleColor();
             
-            UI::Separator();
-            
-            UI::TextDimmed("Ref Speed: " + Text::FormatFloat(ui_RefSpeed, "", 0, 3));
-            UI::TextDimmed("Ref Time:  " + Time::Format(ui_RefTime));
+            if (showRefStats)
+            {
+                UI::TextDimmed("Ref Speed: " + Text::FormatFloat(ui_RefSpeed, "", 0, 3));
+                UI::TextDimmed("Ref Time:  " + Time::Format(ui_RefTime));
+            }
         }
-        UI::End();
-    }
-}
 
+        UI::Separator();
+        
+        if (UI::CollapsingHeader("Advanced Settings"))
+        {
+            useRecordingInterval = UI::Checkbox("Enable Custom Recording Interval", useRecordingInterval);
+            if (useRecordingInterval)
+            {
+                UI::TextDimmed("Smaller Number = More Accurate, But More Memory");
+                recordingInterval = UI::SliderInt("##RecInterval", recordingInterval, 1, 10);
+            }
+            
+            UI::Dummy(vec2(0, 5));
+            showRefStats = UI::Checkbox("Show Speed & Time Reference", showRefStats);
+        }
+    }
+    UI::End();
+}
